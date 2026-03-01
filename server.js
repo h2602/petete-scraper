@@ -4,8 +4,16 @@ import { chromium } from "playwright";
 const app = express();
 app.use(express.json());
 
+/* ============================= */
+/*            HEALTH             */
+/* ============================= */
+
 app.get("/", (req, res) => res.send("OK"));
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+/* ============================= */
+/*          DETAIL SCRAPER       */
+/* ============================= */
 
 app.get("/detail", async (req, res) => {
   const doc = String(req.query.doc || "");
@@ -39,17 +47,27 @@ app.get("/detail", async (req, res) => {
     });
 
     const page = await context.newPage();
+
     await page.setExtraHTTPHeaders({
       "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
     });
 
-    // 1) Home (crear sesión)
-    await page.goto("https://petete.tributos.hacienda.gob.es/consultas/", {
-      waitUntil: "domcontentloaded",
-      timeout: 90000
-    });
+    /* ============================= */
+    /* 1️⃣ Crear sesión inicial       */
+    /* ============================= */
 
-    // 2) Hacer una búsqueda por NUM-CONSULTA (esto crea el contexto interno)
+    await page.goto(
+      "https://petete.tributos.hacienda.gob.es/consultas/",
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000
+      }
+    );
+
+    /* ============================= */
+    /* 2️⃣ Buscar por NUM-CONSULTA   */
+    /* ============================= */
+
     const searchUrl =
       "https://petete.tributos.hacienda.gob.es/consultas/do/search" +
       "?type1=on&type2=on" +
@@ -65,18 +83,25 @@ app.get("/detail", async (req, res) => {
       timeout: 90000
     });
 
-    // 3) Esperar que exista el elemento del documento (docId) y "clicarlo"
-    // En resultados: <td id="doc_64762" onClick="return viewDocument(64762, 2);">
+    /* ============================= */
+    /* 3️⃣ Ejecutar viewDocument()   */
+    /* ============================= */
+
     const selector = `#doc_${doc}`;
     await page.waitForSelector(selector, { timeout: 30000 });
 
-    // click real (no navegar directo)
-    await page.click(selector);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 90000 }),
+      page.evaluate(
+        ({ d, t }) => window.viewDocument(Number(d), Number(t)),
+        { d: doc, t: tab }
+      ),
+    ]);
 
-    // 4) Esperar navegación al detalle
-    await page.waitForLoadState("domcontentloaded", { timeout: 90000 });
+    /* ============================= */
+    /* 4️⃣ Obtener HTML del detalle  */
+    /* ============================= */
 
-    // 5) Obtener HTML final
     const html = await page.content();
 
     res.status(200).json({
@@ -85,6 +110,7 @@ app.get("/detail", async (req, res) => {
       num,
       html
     });
+
   } catch (error) {
     console.error("SCRAPER ERROR:", error);
     res.status(500).json({ error: String(error) });
@@ -95,7 +121,12 @@ app.get("/detail", async (req, res) => {
   }
 });
 
+/* ============================= */
+/*            SERVER             */
+/* ============================= */
+
 const port = process.env.PORT || 10000;
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`petete-scraper listening on ${port}`);
 });
