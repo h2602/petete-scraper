@@ -4,16 +4,8 @@ import { chromium } from "playwright";
 const app = express();
 app.use(express.json());
 
-/* ============================= */
-/*            HEALTH             */
-/* ============================= */
-
 app.get("/", (req, res) => res.send("OK"));
 app.get("/health", (req, res) => res.json({ ok: true }));
-
-/* ============================= */
-/*          DETAIL SCRAPER       */
-/* ============================= */
 
 app.get("/detail", async (req, res) => {
   const doc = String(req.query.doc || "");
@@ -47,27 +39,17 @@ app.get("/detail", async (req, res) => {
     });
 
     const page = await context.newPage();
-
     await page.setExtraHTTPHeaders({
       "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
     });
 
-    /* ============================= */
-    /* 1️⃣ Crear sesión inicial       */
-    /* ============================= */
+    // 1) Crear sesión
+    await page.goto("https://petete.tributos.hacienda.gob.es/consultas/", {
+      waitUntil: "domcontentloaded",
+      timeout: 90000
+    });
 
-    await page.goto(
-      "https://petete.tributos.hacienda.gob.es/consultas/",
-      {
-        waitUntil: "domcontentloaded",
-        timeout: 90000
-      }
-    );
-
-    /* ============================= */
-    /* 2️⃣ Buscar por NUM-CONSULTA   */
-    /* ============================= */
-
+    // 2) Búsqueda por NUM-CONSULTA (crea contexto)
     const searchUrl =
       "https://petete.tributos.hacienda.gob.es/consultas/do/search" +
       "?type1=on&type2=on" +
@@ -83,24 +65,27 @@ app.get("/detail", async (req, res) => {
       timeout: 90000
     });
 
-    /* ============================= */
-    /* 3️⃣ Ejecutar viewDocument()   */
-    /* ============================= */
+    // 3) Extraer el "query" real que genera PETETE (hidden input)
+    const queryValue = await page.locator("#query").getAttribute("value");
+    if (!queryValue) {
+      const html = await page.content();
+      return res.status(500).json({
+        error: "No pude leer #query en la página de resultados",
+        debugHtmlSnippet: html.slice(0, 1500)
+      });
+    }
 
-    const selector = `#doc_${doc}`;
-    await page.waitForSelector(selector, { timeout: 30000 });
+    // 4) Navegar al detalle usando la misma sesión + query real
+    const detailUrl =
+      "https://petete.tributos.hacienda.gob.es/consultas/do/document" +
+      `?query=${encodeURIComponent(queryValue)}` +
+      `&doc=${encodeURIComponent(doc)}` +
+      `&tab=${encodeURIComponent(tab)}`;
 
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 90000 }),
-      page.evaluate(
-        ({ d, t }) => window.viewDocument(Number(d), Number(t)),
-        { d: doc, t: tab }
-      ),
-    ]);
-
-    /* ============================= */
-    /* 4️⃣ Obtener HTML del detalle  */
-    /* ============================= */
+    await page.goto(detailUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 90000
+    });
 
     const html = await page.content();
 
@@ -108,9 +93,10 @@ app.get("/detail", async (req, res) => {
       doc: Number(doc),
       tab: Number(tab),
       num,
+      query: queryValue,
+      detailUrl,
       html
     });
-
   } catch (error) {
     console.error("SCRAPER ERROR:", error);
     res.status(500).json({ error: String(error) });
@@ -121,12 +107,7 @@ app.get("/detail", async (req, res) => {
   }
 });
 
-/* ============================= */
-/*            SERVER             */
-/* ============================= */
-
 const port = process.env.PORT || 10000;
-
 app.listen(port, "0.0.0.0", () => {
   console.log(`petete-scraper listening on ${port}`);
 });
