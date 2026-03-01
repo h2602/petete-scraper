@@ -40,16 +40,17 @@ app.get("/detail", async (req, res) => {
 
     const page = await context.newPage();
     await page.setExtraHTTPHeaders({
-      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     });
 
-    // 1) Crear sesión
+    // 1) Home
     await page.goto("https://petete.tributos.hacienda.gob.es/consultas/", {
       waitUntil: "domcontentloaded",
       timeout: 90000
     });
 
-    // 2) Búsqueda por NUM-CONSULTA (crea contexto)
+    // 2) Search por NUM-CONSULTA (esto crea contexto y carga JS del site)
     const searchUrl =
       "https://petete.tributos.hacienda.gob.es/consultas/do/search" +
       "?type1=on&type2=on" +
@@ -65,45 +66,54 @@ app.get("/detail", async (req, res) => {
       timeout: 90000
     });
 
-    // 3) Extraer el "query" real que genera PETETE (hidden input)
-    const queryValue = await page.locator("#query").getAttribute("value");
-    if (!queryValue) {
-      const html = await page.content();
-      return res.status(500).json({
-        error: "No pude leer #query en la página de resultados",
-        debugHtmlSnippet: html.slice(0, 1500)
-      });
-    }
+    // Esperar a que exista el resultado
+    const selector = `#doc_${doc}`;
+    await page.waitForSelector(selector, { timeout: 30000 });
 
-    // 4) Navegar al detalle usando la misma sesión + query real
-    const detailUrl =
-      "https://petete.tributos.hacienda.gob.es/consultas/do/document" +
-      `?query=${encodeURIComponent(queryValue)}` +
-      `&doc=${encodeURIComponent(doc)}` +
-      `&tab=${encodeURIComponent(tab)}`;
+    // 3) Esperar a que cargue la función viewDocument (no siempre está en window al principio)
+    await page.waitForFunction(
+      () => typeof viewDocument === "function",
+      { timeout: 30000 }
+    );
 
-    await page.goto(detailUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000
-    });
+    // 4) Capturar la respuesta REAL que devuelve el servidor al pedir el documento
+    // Puede ser navegación o XHR; por eso esperamos response.
+    const responsePromise = page.waitForResponse(
+      (r) => r.url().includes("/consultas/do/document"),
+      { timeout: 90000 }
+    );
 
-    const html = await page.content();
+    // Disparar el mismo flujo que el onclick (pero sin depender del click)
+    await page.evaluate(
+      ({ d, t }) => viewDocument(Number(d), Number(t)),
+      { d: doc, t: tab }
+    );
 
-    res.status(200).json({
+    const resp = await responsePromise;
+    const status = resp.status();
+    const respUrl = resp.url();
+    const body = await resp.text();
+
+    // Por si el sitio actualiza el DOM con AJAX: cogemos también el HTML visible final
+    // (a veces el body de la respuesta es parcial y el DOM final está completo)
+    await page.waitForTimeout(300); // pequeño margen
+    const htmlAfter = await page.content();
+
+    return res.status(200).json({
       doc: Number(doc),
       tab: Number(tab),
       num,
-      query: queryValue,
-      detailUrl,
-      html
+      documentRequest: { status, url: respUrl },
+      // body real que devuelve /do/document
+      documentBody: body,
+      // html actual de la página tras ejecutar viewDocument()
+      pageHtml: htmlAfter
     });
   } catch (error) {
     console.error("SCRAPER ERROR:", error);
-    res.status(500).json({ error: String(error) });
+    return res.status(500).json({ error: String(error) });
   } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
+    if (browser) await browser.close().catch(() => {});
   }
 });
 
