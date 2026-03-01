@@ -46,5 +46,8 @@ app.get("/detail", async (req, res) => {
   }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`petete-scraper listening on ${port}`));
+const port = process.env.PORT || 10000;
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`petete-scraper listening on ${port}`);
+});
